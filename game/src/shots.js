@@ -1,79 +1,97 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Costa Azul: Wheelman — screenshot staging. With ?shot=<name> in the URL the
+// game skips the title screen and arranges a real, playable scene for the
+// screenshots in shots.json: the same code paths as normal play, posed.
+//   drive   — midday cruise downtown with traffic around the player
+//   chase   — three-star pursuit, mission objective on the HUD
+//   foot    — on foot in a busy street scene by the Hotel Del Mar
+//   mission — the bank score: cash grabbed, escape to the pier under four stars
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { makeCar, makePoliceCar, startRoute } from './vehicles.js';
+import { makePedestrian } from './people.js';
+import { MISSION_DEFS } from './missions.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
+export function stageShotIfRequested(G, { startGame }) {
+  const params = new URLSearchParams(location.search);
+  const shot = params.get('shot');
+  if (!shot) return false;
+
+  startGame(false);
+  const { city, player } = G;
+  const L = city.landmarks;
+  const place = (car, x, y, angle, speed = 0) => { car.x = x; car.y = y; car.angle = angle; car.speed = speed; return car; };
+
+  if (shot === 'drive' || shot === 'chase') {
+    // Put Marco in a Solano downtown, mid-block on a horizontal avenue.
+    const y = city.roadH[3];
+    const car = place(makeCar(1, '#3498db', city.roadV[4] + 120, y - 19, 0, 'parked'), city.roadV[4] + 120, y - 19, 0, 150);
+    G.cars.push(car);
+    player.inCar = car; car.playerDriven = true; car.everStolen = true;
+    player.x = car.x; player.y = car.y;
+    // Traffic ahead and behind on the same avenue.
+    G.cars.push(place(makeCar(0, '#e74c3c', car.x + 210, y - 19, 0, 120), car.x + 210, y - 19, 0, 120));
+    G.cars.push(place(makeCar(5, '#f7b731', car.x + 330, y + 19, Math.PI, 110), car.x + 330, y + 19, Math.PI, 110));
+    G.cars.push(place(makeCar(3, '#2ecc71', car.x - 190, y - 19, 0, 130), car.x - 190, y - 19, 0, 130));
+    for (let i = 0; i < 6; i++) {
+      const ped = makePedestrian(car.x - 140 + i * 55, y - 52, Math.random);
+      G.peds.push(ped);
     }
+    G.camera.x = car.x; G.camera.y = car.y;
   }
-  return Infinity;
-}
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
+  if (shot === 'drive') {
+    G.director.index = 1; // "Special Delivery" is next
+    G.objective = G.director.objective(city);
+    player.cash = 1050;
   }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
+
+  if (shot === 'chase') {
+    const car = player.inCar;
+    G.heat = 58; G.lastCrimeAt = G.now;
+    for (let i = 0; i < 3; i++) {
+      const cop = makePoliceCar(car.x - 130 - i * 74, car.y + (i % 2 ? 16 : -14), 0.1 * (i - 1));
+      cop.speed = 168;
+      G.cars.push(cop);
     }
+    // Pose the delivery job as the active mission, on its timed step.
+    G.director.index = 1;
+    G.director.active = { def: MISSION_DEFS[1], stepIndex: 1, timer: 96, targetCar: null, holdProgress: 0 };
+    player.cash = 2300;
   }
-  return best;
-}
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+  if (shot === 'foot') {
+    player.x = L.hotel.x - 30; player.y = L.hotel.y - 58;
+    player.angle = 0.4; player.aimAngle = 0.4;
+    for (let i = 0; i < 9; i++) {
+      const ped = makePedestrian(player.x - 130 + i * 34, player.y - 26 + (i % 3) * 30, Math.random);
+      G.peds.push(ped);
+    }
+    G.cars.push(place(makeCar(5, '#f7b731', player.x + 60, L.hotel.y - 19, 0, 96), player.x + 60, L.hotel.y - 19, 0, 96));
+    G.cars.push(place(makeCar(2, '#fd79a8', player.x - 170, L.hotel.y + 19, Math.PI, 88), player.x - 170, L.hotel.y + 19, Math.PI, 88));
+    G.director.index = 0;
+    G.director.active = { def: MISSION_DEFS[0], stepIndex: 0, timer: 0, targetCar: null, holdProgress: 0 };
+    G.camera.x = player.x; G.camera.y = player.y;
+    player.cash = 250;
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  if (shot === 'mission') {
+    player.x = L.bank.x; player.y = L.bank.y - 6;
+    player.angle = Math.PI / 2; player.aimAngle = Math.PI / 2;
+    G.heat = 92; G.lastCrimeAt = G.now;
+    for (let i = 0; i < 3; i++) {
+      const cop = makePoliceCar(player.x - 210 + i * 60, L.bank.y - 150 - (i % 2) * 40, Math.PI / 2.4);
+      G.cars.push(cop);
+    }
+    G.cars.push(place(makeCar(4, '#f7b731', player.x + 90, L.bank.y - 19, 0, 0), player.x + 90, L.bank.y - 19, 0, 0));
+    for (let i = 0; i < 5; i++) G.peds.push(makePedestrian(player.x - 90 + i * 42, player.y + 44, Math.random));
+    G.director.index = 4;
+    G.director.active = { def: MISSION_DEFS[4], stepIndex: 2, timer: 0, targetCar: null, holdProgress: 0 };
+    G.camera.x = player.x; G.camera.y = player.y - 30;
+    player.cash = 9000;
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  // Freeze the posed actors the frame the screenshot is taken: traffic keeps
+  // rolling in drive/chase, but staged speeds are set so one warm-up second
+  // settles everyone into natural places.
+  setTimeout(() => { window.__shotReady = shot; }, 900);
+  return true;
 }

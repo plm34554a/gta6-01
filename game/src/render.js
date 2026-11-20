@@ -1,141 +1,214 @@
-// Drawing only: the world's state and the current screen in, pixels out. The 1280x720 playfield
-// is scaled to fit the window and centred, the margin filled with the backdrop colour. Flat
-// rectangles and circles, canvas text for the HUD and the panels. Text that holds a number is
-// rebuilt only when the number changes, so a frame allocates nothing.
-import { FIELD, FONT, LIVES, PALETTE } from './config.js';
-import { KIND_COIN } from './world.js';
+// Costa Azul: Wheelman — rendering. The static city is one pre-rendered canvas;
+// each frame we blit the visible slice, then draw everything that moves: cars
+// (with liveries, police light bars, damage smoke), pedestrians, the player,
+// bullets, pickups, particles and the objective marker. Camera chases the
+// player with a velocity look-ahead and eases its zoom out as speed builds.
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_PAUSED = 'paused';
-export const SCREEN_OVER = 'over';
+import { WORLD, clamp, lerp } from './config.js';
 
-/** The panel's width; its height grows with its lines: room for the title, the lines and the prompt. */
-const PANEL = { width: 600, top: 134, line: 34, bottom: 70 };
-const LIFE_SIZE = 20;
-const LIFE_GAP = 8;
-
-function cachedLabel(prefix) {
-  let value = -1;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
+export class Camera {
+  constructor() { this.x = 0; this.y = 0; this.zoom = 1; this.shake = 0; }
+  follow(target, dt, view) {
+    const look = target.inCar ? 0.34 : 0.12;
+    const tx = target.x + (target.vx || 0) * look;
+    const ty = target.y + (target.vy || 0) * look;
+    const k = 1 - Math.pow(0.0015, dt);
+    this.x = lerp(this.x, tx, k);
+    this.y = lerp(this.y, ty, k);
+    const speedZoom = target.inCar ? clamp(1 - Math.abs(target.inCar.speed) / 2600, 0.78, 1) : 1;
+    this.zoom = lerp(this.zoom, speedZoom, 1 - Math.pow(0.01, dt));
+    this.shake = Math.max(0, this.shake - dt * 26);
+    const vw = view.w / this.zoom, vh = view.h / this.zoom;
+    this.x = clamp(this.x, vw / 2 - 60, WORLD.width - vw / 2 + 60);
+    this.y = clamp(this.y, vh / 2 - 60, WORLD.height - vh / 2 + 60);
+  }
+  // Screen-space origin of the world view (before zoom).
+  origin(view) {
+    const sx = (Math.random() - 0.5) * this.shake, sy = (Math.random() - 0.5) * this.shake;
+    return { x: this.x - view.w / (2 * this.zoom) + sx, y: this.y - view.h / (2 * this.zoom) + sy };
+  }
 }
 
-export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
-  const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const levelLabel = cachedLabel('Level ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
+export function drawScene(g, game, view) {
+  const { city, camera } = game;
+  const o = camera.origin(view);
+  g.save();
+  g.scale(camera.zoom, camera.zoom);
+  g.translate(-o.x, -o.y);
 
-  function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(window.innerWidth * ratio);
-    const height = Math.round(window.innerHeight * ratio);
-    canvas.width = width;
-    canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+  // Static city slice.
+  g.drawImage(city.staticCanvas, 0, 0);
+
+  // Objective and mission-start markers pulse on the ground.
+  const obj = game.objective;
+  if (obj && obj.x != null) {
+    const pulse = 1 + Math.sin(game.now * 4) * 0.12;
+    g.strokeStyle = game.missionActive ? '#ffd94d' : '#39d0ff';
+    g.lineWidth = 5;
+    g.beginPath(); g.arc(obj.x, obj.y, 30 * pulse, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = game.missionActive ? 'rgba(255,217,77,0.16)' : 'rgba(57,208,255,0.14)';
+    g.beginPath(); g.arc(obj.x, obj.y, 30 * pulse, 0, Math.PI * 2); g.fill();
+  }
+  if (game.holdProgress > 0) {
+    g.strokeStyle = '#ffffff'; g.lineWidth = 6;
+    g.beginPath(); g.arc(obj.x, obj.y, 40, -Math.PI / 2, -Math.PI / 2 + game.holdProgress * Math.PI * 2); g.stroke();
   }
 
-  const fonts = new Map();
-  function text(value, x, y, size, color, align) {
-    if (!fonts.has(size)) fonts.set(size, `${size}px ${FONT}`);
-    context.font = fonts.get(size);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
-  }
-
-  function drawField(state) {
-    context.fillStyle = PALETTE.sky;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    context.fillStyle = PALETTE.ground;
-    context.fillRect(0, FIELD.groundY, FIELD.width, FIELD.height - FIELD.groundY);
-
-    const items = state.items;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      if (item.kind === KIND_COIN) {
-        context.fillStyle = PALETTE.coin;
-        context.beginPath();
-        context.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = PALETTE.block;
-        context.fillRect(item.x, item.y, item.width, item.height);
-      }
-    }
-
-    const player = state.player;
-    // Blink while invulnerable after a hit: hidden on every other tenth of a second.
-    if (player.invulnerable === 0 || Math.floor(player.invulnerable * 10) % 2 === 1) {
-      context.fillStyle = PALETTE.player;
-      context.fillRect(player.x, player.y, player.width, player.height);
+  // Cash and ammo pickups bob and glow.
+  for (const p of game.pickups) {
+    const bob = Math.sin(game.now * 3 + p.phase) * 3;
+    g.fillStyle = 'rgba(0,0,0,0.25)';
+    g.beginPath(); g.ellipse(p.x, p.y + 8, 12, 5, 0, 0, Math.PI * 2); g.fill();
+    if (p.kind === 'cash') {
+      g.fillStyle = '#27ae60'; g.fillRect(p.x - 10, p.y - 6 + bob, 20, 12);
+      g.fillStyle = '#abebc6'; g.fillRect(p.x - 10, p.y - 2 + bob, 20, 3);
+      g.fillStyle = '#145a32'; g.font = 'bold 10px system-ui'; g.textAlign = 'center';
+      g.fillText('$', p.x, p.y + 3 + bob);
+    } else {
+      g.fillStyle = '#7d3c98'; g.fillRect(p.x - 9, p.y - 7 + bob, 18, 14);
+      g.fillStyle = '#f4ecf7'; g.font = 'bold 9px system-ui'; g.textAlign = 'center';
+      g.fillText('AMMO', p.x, p.y + 3 + bob);
     }
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    text(scoreLabel(state.score), 24, 20, 28, PALETTE.text, 'left');
-    text(levelLabel(state.level), FIELD.width / 2, 20, 28, PALETTE.text, 'center');
-    const firstLife = FIELD.width - 24 - LIVES * (LIFE_SIZE + LIFE_GAP) + LIFE_GAP;
-    text('Lives', firstLife - 12, 20, 28, PALETTE.text, 'right');
-    for (let life = 0; life < LIVES; life += 1) {
-      context.fillStyle = life < state.lives ? PALETTE.player : PALETTE.ground;
-      context.fillRect(firstLife + life * (LIFE_SIZE + LIFE_GAP), 24, LIFE_SIZE, LIFE_SIZE);
-    }
+  for (const ped of game.peds) drawPed(g, ped, game.now);
+  for (const car of game.cars) drawCar(g, car, game);
+  if (!game.player.inCar) drawPlayer(g, game.player, game.now);
+
+  // Bullets as short bright tracers.
+  g.strokeStyle = '#ffeaa7'; g.lineWidth = 3; g.lineCap = 'round';
+  for (const b of game.bullets) {
+    g.beginPath(); g.moveTo(b.x - b.vx * 0.016, b.y - b.vy * 0.016); g.lineTo(b.x, b.y); g.stroke();
   }
 
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
-    const y = (FIELD.height - height) / 2;
-    context.fillStyle = PALETTE.panel;
-    context.fillRect(x, y, PANEL.width, height);
-    context.textBaseline = 'alphabetic';
-    text(title, FIELD.width / 2, y + 78, 48, PALETTE.text, 'center');
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center');
-    }
-    text(prompt, FIELD.width / 2, y + height - 40, 24, PALETTE.coin, 'center');
+  // Particles (smoke, sparks, dust, muzzle flashes).
+  for (const fx of game.effects) {
+    const a = clamp(fx.life / fx.maxLife, 0, 1);
+    g.globalAlpha = a * (fx.alpha ?? 0.8);
+    g.fillStyle = fx.color;
+    g.beginPath(); g.arc(fx.x, fx.y, fx.size * (fx.grow ? (1.6 - a * 0.6) : 1), 0, Math.PI * 2); g.fill();
   }
+  g.globalAlpha = 1;
+  g.restore();
 
-  const TITLE_LINES = ['Dodge the red blocks. Catch the gold coins.', 'Move with ← → or A D.  Pause with P.', ''];
-  const PAUSED_LINES = ['The blocks will wait for you.'];
-  const OVER_LINES = ['', ''];
+  // Warm sunset vignette over the whole frame.
+  const grad = g.createRadialGradient(view.w / 2, view.h / 2, view.h * 0.42, view.w / 2, view.h / 2, view.h * 0.95);
+  grad.addColorStop(0, 'rgba(255,150,60,0)');
+  grad.addColorStop(1, 'rgba(80,20,60,0.28)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, view.w, view.h);
+}
 
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
-    if (screen === SCREEN_TITLE) {
-      TITLE_LINES[2] = bestLabel(best);
-      drawPanel('Block Dodger', TITLE_LINES, 'Press Space or click to start');
-      return;
-    }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_OVER) {
-      OVER_LINES[0] = finalLabel(state.score);
-      OVER_LINES[1] = bestLabel(best);
-      drawPanel('Game over', OVER_LINES, 'Press Space or click to play again');
+function drawCar(g, car, game) {
+  const { length: L, width: W } = car.type;
+  g.save();
+  g.translate(car.x, car.y);
+  // Shadow first, unrotated-ish offset toward the sun's opposite.
+  g.fillStyle = 'rgba(20,20,30,0.30)';
+  g.beginPath(); g.ellipse(5, 7, L * 0.52, W * 0.62, car.angle, 0, Math.PI * 2); g.fill();
+  g.rotate(car.angle);
+
+  const isPolice = car.kind === 'police';
+  const isTaxi = car.type.name === 'Taxi Sol';
+  g.fillStyle = isPolice ? '#f4f6f7' : car.color;
+  roundRect(g, -L / 2, -W / 2, L, W, 6); g.fill();
+  if (isPolice) { g.fillStyle = '#1b2a4a'; roundRect(g, -L * 0.18, -W / 2, L * 0.4, W, 4); g.fill(); }
+  if (isTaxi) { g.fillStyle = '#f7b731'; roundRect(g, -L * 0.1, -W / 2, L * 0.2, W, 3); g.fill(); }
+  // Cabin and glass.
+  g.fillStyle = '#1d2b3a';
+  roundRect(g, -L * 0.16, -W * 0.38, L * 0.34, W * 0.76, 4); g.fill();
+  g.fillStyle = 'rgba(140,210,255,0.75)';
+  roundRect(g, L * 0.13, -W * 0.34, L * 0.08, W * 0.68, 3); g.fill(); // windshield
+  // Headlights and tail lights.
+  g.fillStyle = '#fff7ae';
+  g.fillRect(L / 2 - 3, -W / 2 + 2, 3, 5); g.fillRect(L / 2 - 3, W / 2 - 7, 3, 5);
+  g.fillStyle = '#ff3838';
+  g.fillRect(-L / 2, -W / 2 + 2, 3, 5); g.fillRect(-L / 2, W / 2 - 7, 3, 5);
+  // Wheels.
+  g.fillStyle = '#14161a';
+  for (const [wx, wy] of [[-L * 0.32, -W / 2 - 1], [L * 0.32, -W / 2 - 1], [-L * 0.32, W / 2 - 3], [L * 0.32, W / 2 - 3]]) {
+    g.fillRect(wx - 5, wy, 10, 4);
+  }
+  if (isPolice) {
+    // Light bar: red/blue strobes alternate with time.
+    const on = Math.sin(game.now * 14 + car.sirenPhase) > 0;
+    g.fillStyle = on ? '#ff2d2d' : '#5a1010'; g.fillRect(-8, -W / 2 + 2, 7, W - 4);
+    g.fillStyle = on ? '#2255ff' : '#101d5a'; g.fillRect(1, -W / 2 + 2, 7, W - 4);
+    if (game.now % 0.5 < 0.25) {
+      g.globalAlpha = 0.10; g.fillStyle = on ? '#ff2d2d' : '#2255ff';
+      g.beginPath(); g.arc(0, 0, 60, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
     }
   }
+  g.restore();
 
-  resize();
-  window.addEventListener('resize', resize);
-  return { draw };
+  // Damage smoke drifts from a wrecked engine.
+  if (car.health < car.maxHealth * 0.45 && Math.random() < 0.3) {
+    game.effects.push({
+      x: car.x + Math.cos(car.angle) * L * 0.4, y: car.y + Math.sin(car.angle) * L * 0.4,
+      vx: 8 - Math.random() * 16, vy: -22 - Math.random() * 14,
+      life: 0.9, maxLife: 0.9, size: 7 + Math.random() * 6,
+      color: car.disabled ? '#2d3436' : '#636e72', grow: true, alpha: 0.5,
+    });
+  }
+  // A floating tag marks the mission car.
+  if (car.kind === 'target') {
+    const bob = Math.sin(game.now * 5) * 4;
+    g.fillStyle = '#ffd94d';
+    g.beginPath();
+    g.moveTo(car.x, car.y - 34 + bob); g.lineTo(car.x - 8, car.y - 46 + bob); g.lineTo(car.x + 8, car.y - 46 + bob);
+    g.closePath(); g.fill();
+  }
+}
+
+function drawPed(g, ped, now) {
+  g.save();
+  g.translate(ped.x, ped.y);
+  g.fillStyle = 'rgba(20,20,30,0.25)';
+  g.beginPath(); g.ellipse(2, 4, 8, 5, 0, 0, Math.PI * 2); g.fill();
+  if (ped.dead) {
+    g.rotate(ped.angle + Math.PI / 2);
+    g.fillStyle = ped.shirt; roundRect(g, -5, -11, 10, 22, 5); g.fill();
+    g.fillStyle = ped.skin; g.beginPath(); g.arc(0, -14, 5, 0, Math.PI * 2); g.fill();
+    g.restore();
+    return;
+  }
+  const bob = Math.sin(ped.walkPhase) * 1.6;
+  g.rotate(ped.angle + Math.PI / 2);
+  g.fillStyle = ped.pants;
+  g.fillRect(-5, 2 + bob * 0.4, 4, 8); g.fillRect(1, 2 - bob * 0.4, 4, 8); // legs
+  g.fillStyle = ped.shirt; roundRect(g, -6, -6, 12, 12, 5); g.fill();      // torso
+  g.fillStyle = ped.skin; g.beginPath(); g.arc(0, -9, 5, 0, Math.PI * 2); g.fill(); // head
+  g.restore();
+}
+
+function drawPlayer(g, player, now) {
+  g.save();
+  g.translate(player.x, player.y);
+  g.fillStyle = 'rgba(20,20,30,0.3)';
+  g.beginPath(); g.ellipse(2, 4, 9, 6, 0, 0, Math.PI * 2); g.fill();
+  // Aim line and pistol toward the mouse.
+  g.rotate(player.aimAngle);
+  g.strokeStyle = '#14161a'; g.lineWidth = 4; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(6, 3); g.lineTo(17, 3); g.stroke();
+  g.restore();
+  g.save();
+  g.translate(player.x, player.y);
+  const bob = player.moving ? Math.sin(player.walkPhase) * 1.6 : 0;
+  g.rotate(player.angle + Math.PI / 2);
+  g.fillStyle = '#2d3436';
+  g.fillRect(-5, 2 + bob * 0.4, 4, 8); g.fillRect(1, 2 - bob * 0.4, 4, 8);
+  g.fillStyle = '#e84118'; roundRect(g, -6.5, -6, 13, 13, 5); g.fill(); // Marco's coral jacket
+  g.fillStyle = '#f1c27d'; g.beginPath(); g.arc(0, -9, 5.2, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#20242a'; g.beginPath(); g.arc(0, -10.5, 5.2, Math.PI, Math.PI * 2); g.fill(); // hair
+  g.restore();
+}
+
+export function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
 }

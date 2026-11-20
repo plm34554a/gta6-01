@@ -3,16 +3,137 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Costa Azul: Wheelman — an open-world crime game</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1030; font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
+
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; }
+  #hud-topleft { position: absolute; top: 16px; left: 16px; max-width: 430px; }
+  #hud-mission { font-size: 12px; font-weight: 800; letter-spacing: 2.5px; color: #ffd94d; text-shadow: 0 1px 3px rgba(0,0,0,.7); }
+  #hud-objective { margin-top: 3px; font-size: 19px; font-weight: 700; line-height: 1.25; text-shadow: 0 2px 5px rgba(0,0,0,.8); }
+  #hud-timer { margin-top: 4px; font-size: 17px; font-weight: 800; color: #ff8787; text-shadow: 0 1px 4px rgba(0,0,0,.8); min-height: 20px; }
+  #hud-topright { position: absolute; top: 14px; right: 18px; text-align: right; }
+  #hud-cash { font-size: 30px; font-weight: 900; color: #2ed573; text-shadow: 0 2px 6px rgba(0,0,0,.75); letter-spacing: .5px; }
+  #hud-stars { font-size: 25px; color: #ffd94d; text-shadow: 0 2px 5px rgba(0,0,0,.8); letter-spacing: 3px; min-height: 30px; }
+  #hud-stars.hot { color: #ff4757; animation: pulse .5s infinite alternate; }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.07); } }
+  #hud-bottomright { position: absolute; right: 18px; bottom: 16px; text-align: right; }
+  #hud-speed { font-size: 44px; font-weight: 900; text-shadow: 0 2px 6px rgba(0,0,0,.7); line-height: 1; }
+  #hud-speed small { font-size: 14px; font-weight: 700; color: #dfe6e9; }
+  #hud-weapon { margin-top: 2px; font-size: 15px; font-weight: 800; letter-spacing: 1.5px; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+  #hud-healthwrap { margin-top: 7px; width: 210px; height: 13px; margin-left: auto; background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.65); border-radius: 7px; overflow: hidden; }
+  #hud-healthfill { height: 100%; width: 100%; background: #2ed573; transition: width .15s; }
+  #hud-bottomleft { position: absolute; left: 16px; bottom: 16px; }
+  #minimap { width: 196px; height: 196px; border: 3px solid rgba(255,255,255,.75); border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,.5); display: block; }
+  #hud-district { margin-top: 6px; font-size: 13px; font-weight: 800; letter-spacing: 2px; color: #ffeaa7; text-shadow: 0 1px 4px rgba(0,0,0,.85); }
+  #hud-interact { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); font-size: 17px; font-weight: 800;
+    background: rgba(10,10,20,.72); padding: 8px 18px; border-radius: 20px; border: 1.5px solid rgba(255,255,255,.5); }
+  #hud-interact b { color: #ffd94d; }
+
+  /* ---------- toasts & phone ---------- */
+  #toasts { position: fixed; top: 84px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; z-index: 5; }
+  .toast { background: rgba(12,14,26,.85); border-left: 4px solid #ffd94d; color: #fff; padding: 9px 18px; border-radius: 8px;
+    font-size: 15px; opacity: 0; transform: translateY(-8px); transition: all .35s; max-width: 520px; text-align: center; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+  .toast strong { color: #ffd94d; margin-right: 8px; letter-spacing: .5px; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  #phone { position: fixed; right: 18px; bottom: 150px; width: 300px; background: rgba(14,18,30,.92); border: 1.5px solid rgba(255,255,255,.35);
+    border-radius: 14px; color: #fff; padding: 12px 15px; opacity: 0; transform: translateY(12px); transition: all .4s; pointer-events: none; z-index: 5; }
+  #phone.show { opacity: 1; transform: translateY(0); }
+  #phone .from { font-size: 11px; font-weight: 900; letter-spacing: 2px; color: #39d0ff; margin-bottom: 4px; }
+  #phone-text { font-size: 14.5px; line-height: 1.4; }
+
+  /* ---------- overlays ---------- */
+  .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(30,10,50,.45), rgba(10,5,25,.78)); color: #fff; z-index: 10; text-align: center; }
+  .title { font-size: 84px; font-weight: 900; letter-spacing: 3px; line-height: .95; margin: 0;
+    background: linear-gradient(180deg, #ffe259, #ffa751 55%, #ff5e8a); -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 4px 0 rgba(90,10,60,.55)) drop-shadow(0 10px 26px rgba(0,0,0,.5)); }
+  .subtitle { font-size: 25px; font-weight: 800; letter-spacing: 14px; margin: 10px 0 4px; color: #aef3ff; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
+  .tagline { font-size: 16px; color: #f5e9ff; opacity: .92; margin-bottom: 26px; text-shadow: 0 1px 5px rgba(0,0,0,.7); }
+  .btn { pointer-events: auto; cursor: pointer; border: none; border-radius: 30px; padding: 13px 42px; margin: 5px;
+    font-size: 18px; font-weight: 900; letter-spacing: 1.5px; color: #241133; background: linear-gradient(180deg, #ffd94d, #ff9f43);
+    box-shadow: 0 5px 0 #c96a1e, 0 10px 22px rgba(0,0,0,.45); transition: transform .08s; }
+  .btn:hover { transform: scale(1.05); }
+  .btn.ghost { background: rgba(255,255,255,.14); color: #fff; box-shadow: none; border: 1.5px solid rgba(255,255,255,.6); }
+  .controls { margin-top: 28px; display: grid; grid-template-columns: auto auto; gap: 3px 18px; font-size: 14px; color: #e8e4f5; text-align: left; }
+  .controls b { color: #ffd94d; text-align: right; font-weight: 800; }
+  .bigverdict { font-size: 76px; font-weight: 900; letter-spacing: 6px; margin: 0 0 8px; }
+  #end-title.busted { color: #3fa9ff; text-shadow: 0 4px 0 rgba(10,40,90,.6), 0 10px 30px rgba(0,0,0,.6); }
+  #end-title.wasted { color: #ff4757; text-shadow: 0 4px 0 rgba(90,10,20,.6), 0 10px 30px rgba(0,0,0,.6); }
+  #end-text { font-size: 17px; margin-bottom: 22px; color: #f1eaff; }
+  #hurt { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 55%, rgba(220,30,40,.5));
+    opacity: 0; transition: opacity .1s; z-index: 4; }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<canvas id="game" aria-label="Costa Azul: Wheelman — explore the city on foot and by car"></canvas>
+
+<div id="hud" class="hidden">
+  <div id="hud-topleft">
+    <div id="hud-mission">COSTA AZUL</div>
+    <div id="hud-objective">Visit Voss Auto Works</div>
+    <div id="hud-timer"></div>
+  </div>
+  <div id="hud-topright">
+    <div id="hud-cash">$0</div>
+    <div id="hud-stars"></div>
+  </div>
+  <div id="hud-bottomright">
+    <div id="hud-speed"></div>
+    <div id="hud-weapon">PISTOL</div>
+    <div id="hud-healthwrap"><div id="hud-healthfill"></div></div>
+  </div>
+  <div id="hud-bottomleft">
+    <canvas id="minimap" width="196" height="196"></canvas>
+    <div id="hud-district">COSTA AZUL</div>
+  </div>
+  <div id="hud-interact" class="hidden"><b>E</b> — <span id="hud-interact-text">Get in car</span></div>
+</div>
+
+<div id="toasts"></div>
+<div id="phone"><div class="from">📱 DELIA VOSS</div><div id="phone-text"></div></div>
+<div id="hurt"></div>
+
+<div id="menu" class="overlay">
+  <h1 class="title">COSTA AZUL</h1>
+  <div class="subtitle">W H E E L M A N</div>
+  <p class="tagline">One city. One driver. Every car is yours — if you can outrun the Costa Azul PD.<br>
+  Work five jobs for fixer Delia Voss, from a stolen Cometa to the bank score of a lifetime.</p>
+  <div>
+    <button class="btn" id="btn-new">NEW GAME</button>
+    <button class="btn ghost hidden" id="btn-continue">CONTINUE</button>
+  </div>
+  <div class="controls">
+    <b>W A S D</b><span>Walk / drive</span>
+    <b>MOUSE</b><span>Aim · click to shoot on foot</span>
+    <b>E</b><span>Steal / enter · exit car</span>
+    <b>SHIFT</b><span>Sprint on foot</span>
+    <b>SPACE</b><span>Handbrake</span>
+    <b>R</b><span>Reload</span>
+    <b>P / ESC</b><span>Pause</span>
+    <b>M</b><span>Mute</span>
+  </div>
+</div>
+
+<div id="pause" class="overlay hidden">
+  <h2 class="bigverdict" style="color:#ffeaa7">PAUSED</h2>
+  <p id="end-text">The city waits for no one, Marco.</p>
+  <div>
+    <button class="btn" id="btn-resume">RESUME</button>
+    <button class="btn ghost" id="btn-quit">QUIT TO TITLE</button>
+  </div>
+</div>
+
+<div id="end" class="overlay hidden">
+  <h2 class="bigverdict" id="end-title">BUSTED</h2>
+  <p id="end-text"></p>
+  <button class="btn" id="btn-respawn">BACK ON THE STREET</button>
+</div>
+
 <p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>
 </body>
