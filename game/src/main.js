@@ -45,7 +45,7 @@ const G = {
   policeTimer: 0, saveTimer: 0, earned: 0,
   rand: Math.random,
 };
-G.player = makePlayer(G.city.landmarks.safehouse.x, G.city.landmarks.safehouse.y - 46);
+G.player = makePlayer(G.city.landmarks.safehouse.x, G.city.landmarks.safehouse.y);
 
 const hooks = {
   toast: (t, b) => { G.hud.toast(t, b); document.getElementById('status').textContent = t + ' ' + b; },
@@ -394,14 +394,15 @@ function updatePolice(dt) {
     G.policeTimer -= dt;
     if (police.length < desired && G.policeTimer <= 0) {
       G.policeTimer = 2.2;
-      for (let tries = 0; tries < 8; tries++) {
+      let best = null, bestD = 0;
+      for (let tries = 0; tries < 10; tries++) {
         const spot = G.city.randomRoadPoint(Math.random);
         const d = Math.hypot(spot.x - p.x, spot.y - p.y);
-        if (d > 620 && d < 980) {
-          const car = makePoliceCar(spot.x, spot.y, Math.atan2(p.y - spot.y, p.x - spot.x));
-          G.cars.push(car);
-          break;
-        }
+        if (d > bestD) { bestD = d; best = spot; }
+        if (d > 600 && d < 980) { best = spot; break; }
+      }
+      if (best && bestD > 480) {
+        G.cars.push(makePoliceCar(best.x, best.y, Math.atan2(p.y - best.y, p.x - best.x)));
       }
     }
   }
@@ -474,7 +475,7 @@ function startGame(continueSave) {
     }
   } else {
     G.director.index = 0; G.director.storyDone = false;
-    G.player = makePlayer(G.city.landmarks.safehouse.x, G.city.landmarks.safehouse.y - 46);
+    G.player = makePlayer(G.city.landmarks.safehouse.x, G.city.landmarks.safehouse.y);
     G.earned = 0;
   }
   document.getElementById('menu').classList.add('hidden');
@@ -582,4 +583,5 @@ document.getElementById('btn-quit').addEventListener('click', () => location.rel
 document.getElementById('btn-respawn').addEventListener('click', respawn);
 
 stageShotIfRequested(G, { startGame });
+window.__game = G; // lets the maker's own test scripts drive and inspect a run
 requestAnimationFrame(frame);

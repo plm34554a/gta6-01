@@ -105,7 +105,7 @@ export function buildCity(seed) {
   landmarks.pier = { name: 'Old Pier', x: WORLD.waterX + 96, y: roadH[5] };
 
   const city = {
-    roadV, roadH, buildings, blocks, palms, parkingSpots, landmarks,
+    roadV, roadH, buildings, blocks, palms, lamps, parkingSpots, landmarks,
     staticCanvas: null,
     surfaceAt(x, y) {
       if (x >= WORLD.waterX) return isOnPier(x, y) ? 'pier' : 'water';
